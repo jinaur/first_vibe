@@ -1,7 +1,476 @@
 <!DOCTYPE html>
+<html lang="ko">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL 3D 다각형 애니메이션</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+        }
+        button {
+            background: #333;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            margin: 5px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #555;
+        }
+        select {
+            background: #333;
+            color: white;
+            border: none;
+            padding: 5px;
+            margin: 5px;
+        }
+    </style>
 </head>
 <body>
-    <h1>Hello World</h1>
+    <canvas id="gl-canvas"></canvas>
+    <div class="controls">
+        <h3>3D 다각형 애니메이션</h3>
+        <div>
+            <label for="shape-select">도형 선택:</label>
+            <select id="shape-select">
+                <option value="cube">큐브</option>
+                <option value="pyramid">피라미드</option>
+                <option value="octahedron">팔면체</option>
+            </select>
+        </div>
+        <div>
+            <button id="rotate-x">X축 회전</button>
+            <button id="rotate-y">Y축 회전</button>
+            <button id="rotate-z">Z축 회전</button>
+        </div>
+        <div>
+            <button id="reset">초기화</button>
+        </div>
+    </div>
+
+    <script>
+        // WebGL 초기화
+        const canvas = document.getElementById('gl-canvas');
+        const gl = canvas.getContext('webgl');
+        
+        if (!gl) {
+            alert('WebGL을 지원하지 않는 브라우저입니다.');
+        }
+        
+        // 캔버스 크기 조정
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        
+        // 셰이더 소스
+        const vertexShaderSource = `
+            attribute vec3 position;
+            attribute vec3 color;
+            uniform mat4 modelViewMatrix;
+            uniform mat4 projectionMatrix;
+            varying vec3 vColor;
+            
+            void main() {
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                vColor = color;
+            }
+        `;
+        
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec3 vColor;
+            
+            void main() {
+                gl_FragColor = vec4(vColor, 1.0);
+            }
+        `;
+        
+        // 셰이더 컴파일
+        function compileShader(source, type) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('셰이더 컴파일 오류:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+        
+        // 셰이더 프로그램 생성
+        function createProgram(vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('셰이더 프로그램 링크 오류:', gl.getProgramInfoLog(program));
+                return null;
+            }
+            
+            return program;
+        }
+        
+        // 셰이더 초기화
+        const vertexShader = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+        const fragmentShader = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+        const shaderProgram = createProgram(vertexShader, fragmentShader);
+        gl.useProgram(shaderProgram);
+        
+        // 행렬 유틸리티 함수
+        const mat4 = {
+            perspective: function(fov, aspect, near, far) {
+                const f = Math.tan(Math.PI * 0.5 - 0.5 * fov);
+                const rangeInv = 1.0 / (near - far);
+                
+                return [
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (near + far) * rangeInv, -1,
+                    0, 0, near * far * rangeInv * 2, 0
+                ];
+            },
+            
+            multiply: function(a, b) {
+                const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+                const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+                const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+                const a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+                
+                let b0  = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+                let result = [
+                    b0*a00 + b1*a10 + b2*a20 + b3*a30,
+                    b0*a01 + b1*a11 + b2*a21 + b3*a31,
+                    b0*a02 + b1*a12 + b2*a22 + b3*a32,
+                    b0*a03 + b1*a13 + b2*a23 + b3*a33,
+                ];
+                
+                b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+                result = result.concat([
+                    b0*a00 + b1*a10 + b2*a20 + b3*a30,
+                    b0*a01 + b1*a11 + b2*a21 + b3*a31,
+                    b0*a02 + b1*a12 + b2*a22 + b3*a32,
+                    b0*a03 + b1*a13 + b2*a23 + b3*a33,
+                ]);
+                
+                b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+                result = result.concat([
+                    b0*a00 + b1*a10 + b2*a20 + b3*a30,
+                    b0*a01 + b1*a11 + b2*a21 + b3*a31,
+                    b0*a02 + b1*a12 + b2*a22 + b3*a32,
+                    b0*a03 + b1*a13 + b2*a23 + b3*a33,
+                ]);
+                
+                b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+                result = result.concat([
+                    b0*a00 + b1*a10 + b2*a20 + b3*a30,
+                    b0*a01 + b1*a11 + b2*a21 + b3*a31,
+                    b0*a02 + b1*a12 + b2*a22 + b3*a32,
+                    b0*a03 + b1*a13 + b2*a23 + b3*a33,
+                ]);
+                
+                return result;
+            },
+            
+            identity: function() {
+                return [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ];
+            },
+            
+            translation: function(tx, ty, tz) {
+                return [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    tx, ty, tz, 1
+                ];
+            },
+            
+            rotationX: function(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                
+                return [
+                    1, 0, 0, 0,
+                    0, c, s, 0,
+                    0, -s, c, 0,
+                    0, 0, 0, 1
+                ];
+            },
+            
+            rotationY: function(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                
+                return [
+                    c, 0, -s, 0,
+                    0, 1, 0, 0,
+                    s, 0, c, 0,
+                    0, 0, 0, 1
+                ];
+            },
+            
+            rotationZ: function(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                
+                return [
+                    c, s, 0, 0,
+                    -s, c, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ];
+            }
+        };
+        
+        // 도형 정의
+        const shapes = {
+            cube: {
+                vertices: [
+                    // 앞면 (빨강)
+                    -0.5, -0.5, 0.5, 1.0, 0.0, 0.0,
+                    0.5, -0.5, 0.5, 1.0, 0.0, 0.0,
+                    0.5, 0.5, 0.5, 1.0, 0.0, 0.0,
+                    -0.5, 0.5, 0.5, 1.0, 0.0, 0.0,
+                    
+                    // 뒷면 (초록)
+                    -0.5, -0.5, -0.5, 0.0, 1.0, 0.0,
+                    -0.5, 0.5, -0.5, 0.0, 1.0, 0.0,
+                    0.5, 0.5, -0.5, 0.0, 1.0, 0.0,
+                    0.5, -0.5, -0.5, 0.0, 1.0, 0.0,
+                    
+                    // 윗면 (파랑)
+                    -0.5, 0.5, -0.5, 0.0, 0.0, 1.0,
+                    -0.5, 0.5, 0.5, 0.0, 0.0, 1.0,
+                    0.5, 0.5, 0.5, 0.0, 0.0, 1.0,
+                    0.5, 0.5, -0.5, 0.0, 0.0, 1.0,
+                    
+                    // 아랫면 (노랑)
+                    -0.5, -0.5, -0.5, 1.0, 1.0, 0.0,
+                    0.5, -0.5, -0.5, 1.0, 1.0, 0.0,
+                    0.5, -0.5, 0.5, 1.0, 1.0, 0.0,
+                    -0.5, -0.5, 0.5, 1.0, 1.0, 0.0,
+                    
+                    // 오른쪽 (마젠타)
+                    0.5, -0.5, -0.5, 1.0, 0.0, 1.0,
+                    0.5, 0.5, -0.5, 1.0, 0.0, 1.0,
+                    0.5, 0.5, 0.5, 1.0, 0.0, 1.0,
+                    0.5, -0.5, 0.5, 1.0, 0.0, 1.0,
+                    
+                    // 왼쪽 (시안)
+                    -0.5, -0.5, -0.5, 0.0, 1.0, 1.0,
+                    -0.5, -0.5, 0.5, 0.0, 1.0, 1.0,
+                    -0.5, 0.5, 0.5, 0.0, 1.0, 1.0,
+                    -0.5, 0.5, -0.5, 0.0, 1.0, 1.0
+                ],
+                indices: [
+                    0, 1, 2, 0, 2, 3,    // 앞면
+                    4, 5, 6, 4, 6, 7,    // 뒷면
+                    8, 9, 10, 8, 10, 11,  // 윗면
+                    12, 13, 14, 12, 14, 15,  // 아랫면
+                    16, 17, 18, 16, 18, 19,  // 오른쪽
+                    20, 21, 22, 20, 22, 23   // 왼쪽
+                ]
+            },
+            pyramid: {
+                vertices: [
+                    // 바닥 사각형 (초록)
+                    -0.5, -0.5, -0.5, 0.0, 1.0, 0.0,
+                    0.5, -0.5, -0.5, 0.0, 1.0, 0.0,
+                    0.5, -0.5, 0.5, 0.0, 1.0, 0.0,
+                    -0.5, -0.5, 0.5, 0.0, 1.0, 0.0,
+                    
+                    // 꼭대기 정점 (빨강)
+                    0.0, 0.5, 0.0, 1.0, 0.0, 0.0
+                ],
+                indices: [
+                    0, 1, 2, 0, 2, 3,    // 바닥면
+                    0, 4, 1,             // 앞면
+                    1, 4, 2,             // 오른쪽면
+                    2, 4, 3,             // 뒷면
+                    3, 4, 0              // 왼쪽면
+                ]
+            },
+            octahedron: {
+                vertices: [
+                    // 상단 정점 (빨강)
+                    0.0, 0.5, 0.0, 1.0, 0.0, 0.0,
+                    
+                    // 중간 정점들 (파랑)
+                    0.5, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.0, 0.0, 0.5, 0.0, 0.0, 1.0,
+                    -0.5, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    0.0, 0.0, -0.5, 0.0, 0.0, 1.0,
+                    
+                    // 하단 정점 (초록)
+                    0.0, -0.5, 0.0, 0.0, 1.0, 0.0
+                ],
+                indices: [
+                    0, 1, 2,    // 상단 1
+                    0, 2, 3,    // 상단 2
+                    0, 3, 4,    // 상단 3
+                    0, 4, 1,    // 상단 4
+                    5, 2, 1,    // 하단 1
+                    5, 3, 2,    // 하단 2
+                    5, 4, 3,    // 하단 3
+                    5, 1, 4     // 하단 4
+                ]
+            }
+        };
+        
+        // 현재 도형
+        let currentShape = 'cube';
+        
+        // 버퍼 생성 함수
+        function createBuffers(shape) {
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shapes[shape].vertices), gl.STATIC_DRAW);
+            
+            const indexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(shapes[shape].indices), gl.STATIC_DRAW);
+            
+            return {
+                position: positionBuffer,
+                indices: indexBuffer,
+                count: shapes[shape].indices.length
+            };
+        }
+        
+        // 초기 버퍼
+        let buffers = createBuffers(currentShape);
+        
+        // 회전 변수
+        let rotationX = 0;
+        let rotationY = 0;
+        let rotationZ = 0;
+        let autoRotateX = false;
+        let autoRotateY = true;
+        let autoRotateZ = false;
+        
+        // UI 이벤트 처리
+        document.getElementById('shape-select').addEventListener('change', function(e) {
+            currentShape = e.target.value;
+            buffers = createBuffers(currentShape);
+        });
+        
+        document.getElementById('rotate-x').addEventListener('click', function() {
+            autoRotateX = !autoRotateX;
+            this.textContent = autoRotateX ? 'X축 회전 중지' : 'X축 회전';
+        });
+        
+        document.getElementById('rotate-y').addEventListener('click', function() {
+            autoRotateY = !autoRotateY;
+            this.textContent = autoRotateY ? 'Y축 회전 중지' : 'Y축 회전';
+        });
+        
+        document.getElementById('rotate-z').addEventListener('click', function() {
+            autoRotateZ = !autoRotateZ;
+            this.textContent = autoRotateZ ? 'Z축 회전 중지' : 'Z축 회전';
+        });
+        
+        document.getElementById('reset').addEventListener('click', function() {
+            rotationX = 0;
+            rotationY = 0;
+            rotationZ = 0;
+            autoRotateX = false;
+            autoRotateY = true;
+            autoRotateZ = false;
+            document.getElementById('rotate-x').textContent = 'X축 회전';
+            document.getElementById('rotate-y').textContent = 'Y축 회전 중지';
+            document.getElementById('rotate-z').textContent = 'Z축 회전';
+        });
+        
+        // 애니메이션 함수
+        function render(time) {
+            // 배경 색 설정
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            
+            // 깊이 테스트 활성화
+            gl.enable(gl.DEPTH_TEST);
+            
+            // 회전 업데이트
+            if (autoRotateX) rotationX += 0.01;
+            if (autoRotateY) rotationY += 0.01;
+            if (autoRotateZ) rotationZ += 0.01;
+            
+            // 변환 행렬 설정
+            const modelViewMatrix = mat4.identity();
+            let matrix = modelViewMatrix;
+            matrix = mat4.multiply(matrix, mat4.translation(0, 0, -2.0));
+            matrix = mat4.multiply(matrix, mat4.rotationX(rotationX));
+            matrix = mat4.multiply(matrix, mat4.rotationY(rotationY));
+            matrix = mat4.multiply(matrix, mat4.rotationZ(rotationZ));
+            
+            const fieldOfView = Math.PI / 4;
+            const aspect = canvas.width / canvas.height;
+            const zNear = 0.1;
+            const zFar = 100.0;
+            const projectionMatrix = mat4.perspective(fieldOfView, aspect, zNear, zFar);
+            
+            // 셰이더 속성 설정
+            const positionLocation = gl.getAttribLocation(shaderProgram, 'position');
+            const colorLocation = gl.getAttribLocation(shaderProgram, 'color');
+            
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+            gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(positionLocation);
+            
+            gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(colorLocation);
+            
+            // 유니폼 변수 설정
+            const modelViewMatrixLocation = gl.getUniformLocation(shaderProgram, 'modelViewMatrix');
+            const projectionMatrixLocation = gl.getUniformLocation(shaderProgram, 'projectionMatrix');
+            
+            gl.uniformMatrix4fv(modelViewMatrixLocation, false, matrix);
+            gl.uniformMatrix4fv(projectionMatrixLocation, false, projectionMatrix);
+            
+            // 렌더링
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+            gl.drawElements(gl.TRIANGLES, buffers.count, gl.UNSIGNED_SHORT, 0);
+            
+            // 다음 프레임 요청
+            requestAnimationFrame(render);
+        }
+        
+        // 애니메이션 시작
+        requestAnimationFrame(render);
+    </script>
 </body>
 </html>
